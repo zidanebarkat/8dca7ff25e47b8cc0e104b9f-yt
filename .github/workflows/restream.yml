@@ -1,0 +1,35 @@
+name: Restream
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: Source URL
+        required: true
+      youtube_key:
+        description: YouTube Stream Key
+        required: true
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg build-essential libssl-dev
+          pip install -q yt-dlp curl_cffi
+      - name: Get HLS
+        id: resolve
+        run: |
+          hls=$(yt-dlp --impersonate chrome -g --socket-timeout 15 "${{ inputs.source_url }}" 2>/dev/null | tail -1)
+          echo "hls=$hls" >> $GITHUB_OUTPUT
+      - name: Restream
+        run: |
+          HLS="${{ steps.resolve.outputs.hls }}"
+          PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
+          YT_KEY="${{ inputs.youtube_key }}"
+          ffmpeg -nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 \
+            -i "$HLS" \
+            -map 0:v -map 0:a -c:v copy -c:a copy \
+            -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY"
