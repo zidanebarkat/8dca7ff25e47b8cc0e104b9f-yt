@@ -51,7 +51,7 @@ jobs:
         id: resolve
         run: |
           echo "=== Trying live HLS first ==="
-          urls=$(yt-dlp --impersonate chrome $COOKIES -g --socket-timeout 30 "${{ inputs.source_url }}" 2>/tmp/yt_err.txt) || true
+          urls=$(yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES -g --socket-timeout 30 "${{ inputs.source_url }}" 2>/tmp/yt_err.txt) || true
           cat /tmp/yt_err.txt
           if [ -n "$urls" ]; then
             count=$(echo "$urls" | wc -l)
@@ -69,8 +69,8 @@ jobs:
             echo "Resolved as live stream"
           else
             echo "=== Not live, downloading video ==="
-            yt-dlp --impersonate chrome $COOKIES \
-              -f "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best" \
+            yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES \
+              -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" \
               --merge-output-format mp4 -o "source_video.mp4" \
               "${{ inputs.source_url }}" 2>&1 || true
             if [ -f "source_video.mp4" ] && [ -s "source_video.mp4" ]; then
