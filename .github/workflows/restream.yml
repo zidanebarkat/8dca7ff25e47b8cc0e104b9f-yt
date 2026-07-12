@@ -28,15 +28,18 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends ffmpeg fonts-dejavu-core
-          pip install -q yt-dlp
+          pip install -q yt-dlp curl_cffi
 
       - name: Resolve source
         id: resolve
         run: |
-          urls=$(yt-dlp -g --socket-timeout 30 "${{ inputs.source_url }}" 2>/dev/null) || true
+          echo "Resolving: ${{ inputs.source_url }}"
+          yt-dlp --impersonate chrome -g --socket-timeout 30 "${{ inputs.source_url }}" > /tmp/yt_urls.txt 2>/tmp/yt_err.txt || true
+          cat /tmp/yt_err.txt
+          urls=$(cat /tmp/yt_urls.txt)
           if [ -z "$urls" ]; then
             echo "live=false" >> "$GITHUB_OUTPUT"
-            echo "ERROR: Could not resolve source. Is it live? URL: ${{ inputs.source_url }}"
+            echo "ERROR: Could not resolve source. URL: ${{ inputs.source_url }}"
             exit 1
           fi
           count=$(echo "$urls" | wc -l)
