@@ -128,22 +128,24 @@ jobs:
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           echo "$OT" > overlay.txt
 
-          if [ -n "$OT" ]; then
-            VF="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.04:fontcolor=white:x=(w-text_w)/2:y=h-th-20:shadowcolor=black@0.8:shadowx=3:shadowy=3"
-            VF="$VF,format=yuv420p[out]"
-          fi
-
           if [ "$MODE" = "download" ]; then
             echo "=== Streaming downloaded file (loop) ==="
             for attempt in $(seq 1 50); do
               echo "=== Stream attempt $attempt at $(date) ==="
-              CMD=(ffmpeg -nostdin -re -stream_loop -1 -i source_video.mp4 -c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k)
               if [ -n "$OT" ]; then
-                CMD+=(-vf "$VF" -map "[out]")
+                ffmpeg -nostdin -re -stream_loop -1 -i source_video.mp4 \
+                  -filter_complex "[0:v]drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.04:fontcolor=white:x=(w-text_w)/2:y=h-th-20:shadowcolor=black@0.8:shadowx=3:shadowy=3,format=yuv420p[out]" \
+                  -map "[out]" -map 0:a \
+                  -c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 \
+                  -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k \
+                  -f flv "${{ inputs.output_url }}" && break
+              else
+                ffmpeg -nostdin -re -stream_loop -1 -i source_video.mp4 \
+                  -map 0:v -map 0:a \
+                  -c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 \
+                  -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k \
+                  -f flv "${{ inputs.output_url }}" && break
               fi
-              CMD+=(-map 0:a -f flv "${{ inputs.output_url }}")
-              echo "Running: ${CMD[*]}"
-              "${CMD[@]}" && break
               echo "ffmpeg exited with code $?, restarting in 5s..."
               sleep 5
             done
@@ -156,20 +158,27 @@ jobs:
 
             for attempt in $(seq 1 50); do
               echo "=== Stream attempt $attempt at $(date) ==="
-              CMD=(ffmpeg -nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -i "$VIDEO_URL")
+              INPUTS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -i "$VIDEO_URL")
               if [ "$HAS_SEP" = "true" ] && [ -n "$AUDIO_URL" ]; then
-                CMD+=(-i "$AUDIO_URL")
+                INPUTS+=(-i "$AUDIO_URL")
                 AMAP="-map 1:a"
               else
                 AMAP="-map 0:a"
               fi
-              CMD+=(-c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k)
               if [ -n "$OT" ]; then
-                CMD+=(-vf "$VF" -map "[out]")
+                ffmpeg "${INPUTS[@]}" \
+                  -filter_complex "[0:v]drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.04:fontcolor=white:x=(w-text_w)/2:y=h-th-20:shadowcolor=black@0.8:shadowx=3:shadowy=3,format=yuv420p[out]" \
+                  -map "[out]" $AMAP \
+                  -c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 \
+                  -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k \
+                  -f flv "${{ inputs.output_url }}" && break
+              else
+                ffmpeg "${INPUTS[@]}" \
+                  -map 0:v $AMAP \
+                  -c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 \
+                  -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k \
+                  -f flv "${{ inputs.output_url }}" && break
               fi
-              CMD+=($AMAP -f flv "${{ inputs.output_url }}")
-              echo "Running: ${CMD[*]}"
-              "${CMD[@]}" && break
               echo "ffmpeg exited with code $?, restarting in 5s..."
               sleep 5
             done
