@@ -12,6 +12,10 @@ on:
         description: Overlay text on stream
         required: false
         default: ''
+      cookies_b64:
+        description: Base64-encoded cookies.txt for YouTube
+        required: false
+        default: ''
       github_token:
         description: GitHub PAT for self-trigger
         required: false
@@ -32,11 +36,22 @@ jobs:
           curl -fsSL https://deno.land/install.sh | sh || true
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
 
+      - name: Setup cookies
+        run: |
+          if [ -n "${{ inputs.cookies_b64 }}" ]; then
+            echo "${{ inputs.cookies_b64 }}" | base64 -d > cookies.txt
+            echo "COOKIES=--cookies cookies.txt" >> $GITHUB_ENV
+            echo "Cookies loaded ($(wc -c < cookies.txt) bytes)"
+          else
+            echo "COOKIES=" >> $GITHUB_ENV
+            echo "No cookies provided, trying without"
+          fi
+
       - name: Resolve source
         id: resolve
         run: |
           echo "=== Trying live HLS first ==="
-          urls=$(yt-dlp --impersonate chrome --extractor-args "youtube:player_client=ios,web" -g --socket-timeout 30 "${{ inputs.source_url }}" 2>/tmp/yt_err.txt) || true
+          urls=$(yt-dlp --impersonate chrome $COOKIES -g --socket-timeout 30 "${{ inputs.source_url }}" 2>/tmp/yt_err.txt) || true
           cat /tmp/yt_err.txt
           if [ -n "$urls" ]; then
             count=$(echo "$urls" | wc -l)
@@ -54,7 +69,8 @@ jobs:
             echo "Resolved as live stream"
           else
             echo "=== Not live, downloading video ==="
-            yt-dlp --impersonate chrome --extractor-args "youtube:player_client=ios,web" -f "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best" \
+            yt-dlp --impersonate chrome $COOKIES \
+              -f "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best" \
               --merge-output-format mp4 -o "source_video.mp4" \
               "${{ inputs.source_url }}" 2>&1 || true
             if [ -f "source_video.mp4" ] && [ -s "source_video.mp4" ]; then
@@ -90,6 +106,7 @@ jobs:
                 "source_url":"${{ inputs.source_url }}",
                 "output_url":"${{ inputs.output_url }}",
                 "overlay_text":"${{ inputs.overlay_text }}",
+                "cookies_b64":"${{ inputs.cookies_b64 }}",
                 "github_token":"${{ inputs.github_token }}"
               }}'
           }
