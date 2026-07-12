@@ -1,254 +1,126 @@
-name: Restream
+name: YT Restream
 on:
   workflow_dispatch:
     inputs:
       source_url:
-        description: Source URL
+        description: Source URL (YouTube, Twitch, etc.)
         required: true
       output_url:
-        description: Kick RTMP/SRT URL
+        description: YouTube RTMP URL
         required: true
-      fallback_video:
-        description: Fallback Video URL
-        required: false
-        default: 'https://cdn.pixabay.com/video/2025/10/23/311602_large.mp4'
-      fallback_playlist:
-        description: Fallback Music Playlist
-        required: false
-        default: |-
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/yFLu7P69mDjxhW2aF5MS16GVCqpw4oCqSKw4eSVN.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/Djej42Pty0GrF6VFUNzYPDxsuhCwgWzF9ZHWFsZY.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/3CujPNW3YlSqNkWQSgsgysHBl1YPOXRsqBTX2gh0.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/hMRyjksozJqHXKTqLJLjhV9dVMNMywBPJIGhzEFh.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/Lq2CptklJpFylGJ8xFTGf9Ao6wzrNu6qkZY1wmgb.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/I0x2w0gQdIqJ8WX6qkbn2j7OPWZhJqsncWBvOaf7.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/wUFY7RnCiQIfvL3FAlyKRifL7wxYF4LN6Trb6aOh.mp3
       overlay_text:
-        description: Overlay text on video
-        required: false
-        default: ''
-      browser_overlay_url:
-        description: Browser overlay URL (chat, alerts, etc.)
+        description: Overlay text on stream
         required: false
         default: ''
       github_token:
         description: GitHub PAT for self-trigger
         required: false
         default: ''
-      preview:
-        description: Preview mode (no streaming, saves local file)
-        required: false
-        default: 'false'
 
 jobs:
   stream:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    env:
-      PREVIEW: ${{ inputs.preview }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Debug preview value
-        run: |
-          echo "PREVIEW env = [$PREVIEW]"
-          echo "inputs.preview = [${{ inputs.preview }}]"
-          if [[ "$PREVIEW" == "true" ]]; then
-            echo "PREVIEW is true"
-          else
-            echo "PREVIEW is not true"
-          fi
-
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/restream.yml') }}
-          restore-keys: apt-${{ runner.os }}-
 
       - name: Install deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends ffmpeg build-essential libssl-dev fonts-dejavu-core
-          pip install -q yt-dlp curl_cffi websocket-client pillow
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg fonts-dejavu-core
+          pip install -q yt-dlp
 
-      - name: Validate font
-        run: |
-          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-          [ -f "$FONT" ] || { echo "FATAL: font missing at $FONT"; exit 1; }
-
-      - name: Try resolve source HLS
+      - name: Resolve source
         id: resolve
         run: |
-          hls=$(yt-dlp --impersonate chrome -g --socket-timeout 15 "${{ inputs.source_url }}" 2>/dev/null | tail -1) || true
-          if [ -z "$hls" ]; then
+          urls=$(yt-dlp -g --socket-timeout 30 "${{ inputs.source_url }}" 2>/dev/null) || true
+          if [ -z "$urls" ]; then
             echo "live=false" >> "$GITHUB_OUTPUT"
+            echo "ERROR: Could not resolve source. Is it live? URL: ${{ inputs.source_url }}"
+            exit 1
+          fi
+          count=$(echo "$urls" | wc -l)
+          if [ "$count" -ge 2 ]; then
+            echo "video_url=$(echo "$urls" | head -1)" >> "$GITHUB_OUTPUT"
+            echo "audio_url=$(echo "$urls" | sed -n '2p')" >> "$GITHUB_OUTPUT"
+            echo "has_separate_audio=true" >> "$GITHUB_OUTPUT"
           else
-            echo "hls=$hls" >> "$GITHUB_OUTPUT"
-            echo "live=true" >> "$GITHUB_OUTPUT"
+            echo "video_url=$urls" >> "$GITHUB_OUTPUT"
+            echo "audio_url=" >> "$GITHUB_OUTPUT"
+            echo "has_separate_audio=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "live=true" >> "$GITHUB_OUTPUT"
+
+      - name: Overlay text updater
+        if: inputs.overlay_text != ''
+        run: |
+          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+          echo "${{ inputs.overlay_text }}" > overlay.txt
+          (while true; do
+            curl -s "https://strwithgit.pythonanywhere.com/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('overlay_text',''))" > overlay.txt 2>/dev/null || true
+            sleep 10
+          done) &
+
+      - name: Schedule self-reboot
+        if: inputs.github_token != ''
+        run: |
+          TRIGGER_WORKFLOW() {
+            curl -s -X POST \
+              -H "Authorization: Bearer ${{ inputs.github_token }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/restream.yml/dispatches" \
+              -d '{"ref":"main","inputs":{
+                "source_url":"${{ inputs.source_url }}",
+                "output_url":"${{ inputs.output_url }}",
+                "overlay_text":"${{ inputs.overlay_text }}",
+                "github_token":"${{ inputs.github_token }}"
+              }}'
+          }
+          (sleep 20400 && for i in 1 2 3; do
+            echo "Self-reboot attempt $i..."
+            RESP=$(TRIGGER_WORKFLOW)
+            echo "$RESP"
+            if echo "$RESP" | grep -q '"id"'; then
+              echo "Self-reboot triggered"
+              break
+            fi
+            sleep 30
+          done) &
+
+      - name: Stream to YouTube
+        run: |
+          PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
+          VIDEO_URL="${{ steps.resolve.outputs.video_url }}"
+          AUDIO_URL="${{ steps.resolve.outputs.audio_url }}"
+          HAS_SEP="${{ steps.resolve.outputs.has_separate_audio }}"
+          OT="${{ inputs.overlay_text }}"
+          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+          echo "$OT" > overlay.txt
+
+          if [ -n "$OT" ]; then
+            VF="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.04:fontcolor=white:x=(w-text_w)/2:y=h-th-20:shadowcolor=black@0.8:shadowx=3:shadowy=3"
+            VF="$VF,format=yuv420p[out]"
+            VMAP="-map [out]"
+          else
+            VMAP=""
           fi
 
-      - name: Prepare fallback assets
-        if: steps.resolve.outputs.live != 'true'
-        env:
-          PLAYLIST: ${{ inputs.fallback_playlist }}
-        run: |
-          curl -L -o brb.mp4 "${{ inputs.fallback_video }}"
-          echo "$PLAYLIST" > playlist_urls.txt
-          idx=0
-          while IFS= read -r url; do
-            [ -z "$url" ] && continue
-            idx=$((idx+1))
-            if curl -L -o "track_${idx}.mp3" "$url" 2>/dev/null && [ -s "track_${idx}.mp3" ] && ffprobe -i "track_${idx}.mp3" -show_entries format=duration -v quiet -of csv=p=0 >/dev/null 2>&1; then
-              :
+          for attempt in $(seq 1 50); do
+            echo "=== Stream attempt $attempt at $(date) ==="
+            CMD=(ffmpeg -nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -i "$VIDEO_URL")
+            if [ "$HAS_SEP" = "true" ] && [ -n "$AUDIO_URL" ]; then
+              CMD+=(-i "$AUDIO_URL")
+              AMAP="-map 1:a"
             else
-              yt-dlp --impersonate chrome -o "track_${idx}.%(ext)s" "$url" 2>/dev/null || true
+              AMAP="-map 0:a"
             fi
-          done < playlist_urls.txt
-          > concat.txt
-          for rep in $(seq 1 100); do
-            for i in $(seq 1 $idx); do
-              for f in track_$i.*; do
-                [ -f "$f" ] && ffprobe -i "$f" -show_entries format=duration -v quiet -of csv=p=0 >/dev/null 2>&1 && echo "file '$f'" >> concat.txt
-                break
-              done
-            done
-          done
-
-      - name: Extract chat channel
-        id: chat_channel
-        run: |
-          url="${{ inputs.source_url }}"
-          channel=$(echo "$url" | sed 's|/$||' | awk -F/ '{print $NF}' | grep -oP '^[a-zA-Z0-9_-]+' || echo "")
-          echo "channel=${channel:-zed-bx}" >> "$GITHUB_OUTPUT"
-
-      - name: Create chat FIFO
-        run: mkfifo /tmp/chat_overlay.fifo
-
-      - name: Start Python chat overlay
-        run: |
-          FLAGS="--channel ${{ steps.chat_channel.outputs.channel }} --fifo /tmp/chat_overlay.fifo --log-file /tmp/chat_overlay.log"
-          if [ -n "${{ inputs.browser_overlay_url }}" ]; then
-            echo "chat=fallback" >> "$GITHUB_ENV"
-          else
-            python3 ${{ github.workspace }}/chat_overlay.py $FLAGS &
-            echo "chat=python" >> "$GITHUB_ENV"
-            sleep 2
-          fi
-
-      - name: Schedule self-reboot (before 6h limit)
-        if: inputs.github_token != '' && inputs.preview != 'true'
-        run: |
-          (sleep 21000 && curl -s -X POST \
-            -H "Authorization: Bearer ${{ inputs.github_token }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/restream.yml/dispatches" \
-            -d '{"ref":"main","inputs":{
-              "source_url":"${{ inputs.source_url }}",
-              "output_url":"${{ inputs.output_url }}",
-              "overlay_text":"${{ inputs.overlay_text }}",
-              "browser_overlay_url":"${{ inputs.browser_overlay_url }}",
-              "fallback_video":"${{ inputs.fallback_video }}",
-              "fallback_playlist":"${{ inputs.fallback_playlist }}",
-              "github_token":"${{ inputs.github_token }}"
-            }}') &
-
-      - name: Fallback restream (preview)
-        if: steps.resolve.outputs.live != 'true' && inputs.preview == 'true'
-        env:
-          OT: ${{ inputs.overlay_text }}
-        run: |
-          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-          echo "$OT" > overlay.txt
-          (while true; do
-            curl -s "https://strwithgit.pythonanywhere.com/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('overlay_text',''))" > overlay.txt
-            sleep 10
-          done) &
-          BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
-          VF="[0:v]scale=1920:1080,$BEVELED[main];[2:v]format=rgba[ov];[main][ov]overlay=20:main_h-overlay_h-20:format=auto[out];[out]split[mainout][snaptmp];[snaptmp]fps=1/5[snap]"
-          (while true; do
-            if [ -f /tmp/preview_composite.jpg ]; then
-              curl -s -X POST -F "frame=@/tmp/preview_composite.jpg" "https://strwithgit.pythonanywhere.com/preview_frame_upload" >/dev/null 2>&1 || true
+            CMD+=(-c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k)
+            if [ -n "$VMAP" ]; then
+              CMD+=(-vf "$VF" $VMAP)
             fi
-            sleep 3
-          done) &
-          ffmpeg -nostdin -re -stream_loop -1 -i brb.mp4 -f concat -safe 0 -i concat.txt -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex "$VF" -map '[mainout]' -map 1:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -shortest -bufsize 4000k -maxrate 2000k -g 60 -f null - -map '[snap]' -f image2 -update 1 -q:v 5 /tmp/preview_composite.jpg
-
-      - name: Fallback restream (live)
-        if: steps.resolve.outputs.live != 'true' && inputs.preview != 'true'
-        env:
-          OT: ${{ inputs.overlay_text }}
-        run: |
-          mkfifo /tmp/chat_overlay.fifo 2>/dev/null || true
-          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-          echo "$OT" > overlay.txt
-          (while true; do
-            curl -s "https://strwithgit.pythonanywhere.com/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('overlay_text',''))" > overlay.txt
-            sleep 10
-          done) &
-          BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
-          VF="[0:v]scale=1920:1080,$BEVELED[main];[2:v]format=rgba[ov];[main][ov]overlay=20:main_h-overlay_h-20:format=auto[out]"
-          CMD="ffmpeg -nostdin -re -stream_loop -1 -i brb.mp4 -f concat -safe 0 -i concat.txt -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex \"$VF\" -map '[out]' -map 1:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -shortest -bufsize 4000k -maxrate 2000k -g 60 -pix_fmt yuv420p"
-          URL="${{ inputs.output_url }}"
-          if [[ "$URL" == srt://* ]]; then
-            CMD="$CMD -f mpegts \"$URL\""
-          else
-            CMD="$CMD -f flv \"$URL\""
-          fi
-          while true; do
-            eval "$CMD" || true
-            echo "Restream died, restarting in 10s..."
-            sleep 10
-          done
-
-      - name: Live restream (preview)
-        if: steps.resolve.outputs.live == 'true' && inputs.preview == 'true'
-        env:
-          OT: ${{ inputs.overlay_text }}
-        run: |
-          HLS="${{ steps.resolve.outputs.hls }}"
-          PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
-          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-          echo "$OT" > overlay.txt
-          (while true; do
-            curl -s "https://strwithgit.pythonanywhere.com/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('overlay_text',''))" > overlay.txt
-            sleep 10
-          done) &
-          BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
-          VF="[0:v]$BEVELED[main];[1:v]format=rgba[ov];[main][ov]overlay=20:main_h-overlay_h-20:format=auto[out];[out]split[mainout][snaptmp];[snaptmp]fps=1/5[snap]"
-          (while true; do
-            if [ -f /tmp/preview_composite.jpg ]; then
-              curl -s -X POST -F "frame=@/tmp/preview_composite.jpg" "https://strwithgit.pythonanywhere.com/preview_frame_upload" >/dev/null 2>&1 || true
-            fi
-            sleep 3
-          done) &
-          ffmpeg -nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -i "$HLS" -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex "$VF" -map '[mainout]' -map 0:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -bufsize 4000k -maxrate 2000k -g 60 -f null - -map '[snap]' -f image2 -update 1 -q:v 5 /tmp/preview_composite.jpg
-
-      - name: Live restream (live)
-        if: steps.resolve.outputs.live == 'true' && inputs.preview != 'true'
-        env:
-          OT: ${{ inputs.overlay_text }}
-        run: |
-          mkfifo /tmp/chat_overlay.fifo 2>/dev/null || true
-          HLS="${{ steps.resolve.outputs.hls }}"
-          PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
-          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-          echo "$OT" > overlay.txt
-          (while true; do
-            curl -s "https://strwithgit.pythonanywhere.com/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('overlay_text',''))" > overlay.txt
-            sleep 10
-          done) &
-          BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
-          VF="[0:v]$BEVELED[main];[1:v]format=rgba[ov];[main][ov]overlay=20:main_h-overlay_h-20:format=auto[out]"
-          CMD="ffmpeg -nostdin -re -protocol_whitelist \"$PWL\" -fflags +discardcorrupt -timeout 30000000 -i \"$HLS\" -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex \"$VF\" -map '[out]' -map 0:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -bufsize 4000k -maxrate 2000k -g 60 -pix_fmt yuv420p"
-          URL="${{ inputs.output_url }}"
-          if [[ "$URL" == srt://* ]]; then
-            CMD="$CMD -f mpegts \"$URL\""
-          else
-            CMD="$CMD -f flv \"$URL\""
-          fi
-          while true; do
-            eval "$CMD" || true
-            echo "Restream died, restarting in 10s..."
-            sleep 10
+            CMD+=($AMAP -f flv "${{ inputs.output_url }}")
+            echo "Running: ${CMD[*]}"
+            "${CMD[@]}" && break
+            echo "ffmpeg exited with code $?, restarting in 5s..."
+            sleep 5
           done
