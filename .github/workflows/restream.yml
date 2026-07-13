@@ -67,9 +67,23 @@ jobs:
       - name: Resolve source
         id: resolve
         run: |
-          echo "=== Trying live HLS first ==="
-          urls=$(yt-dlp --impersonate chrome --remote-components ejs:github --extractor-args "youtube:player_client=web" $COOKIES -g --socket-timeout 30 "${{ inputs.source_url }}" 2>/tmp/yt_err.txt) || true
-          cat /tmp/yt_err.txt
+          URL="${{ inputs.source_url }}"
+          echo "Source: $URL"
+
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+          echo "=== Trying live HLS (mediaconnect) ==="
+          for CLIENT in mweb android; do
+            echo "=== Trying live HLS: player_client=$CLIENT ==="
+            urls=$(yt-dlp --extractor-args "youtube:player_client=$CLIENT" $COOKIES --no-check-certificates --user-agent "$UA" -g --socket-timeout 30 "$URL" 2>/tmp/yt_err.txt) || true
+            cat /tmp/yt_err.txt | tail -3
+            if [ -n "$urls" ]; then
+              break
+            fi
+            echo "Waiting 5s before next attempt..."
+            sleep 5
+          done
+
           if [ -n "$urls" ]; then
             count=$(echo "$urls" | wc -l)
             if [ "$count" -ge 2 ]; then
@@ -86,19 +100,24 @@ jobs:
             echo "Resolved as live stream"
           else
             echo "=== Not live, downloading video ==="
-            yt-dlp --impersonate chrome --remote-components ejs:github --extractor-args "youtube:player_client=web" $COOKIES \
-              -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" \
-              --merge-output-format mp4 -o "source_video.mp4" \
-              "${{ inputs.source_url }}" 2>&1 || true
-            if [ -f "source_video.mp4" ] && [ -s "source_video.mp4" ]; then
-              echo "mode=download" >> "$GITHUB_OUTPUT"
-              echo "live=true" >> "$GITHUB_OUTPUT"
-              echo "Downloaded video: $(ls -lh source_video.mp4 | awk '{print $5}')"
-            else
-              echo "live=false" >> "$GITHUB_OUTPUT"
-              echo "ERROR: Failed to resolve or download source"
-              exit 1
-            fi
+            for CLIENT in mweb android; do
+              echo "--- Download try: player_client=$CLIENT ---"
+              yt-dlp --extractor-args "youtube:player_client=$CLIENT" $COOKIES --no-check-certificates --user-agent "$UA" \
+                -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" \
+                --merge-output-format mp4 -o "source_video.mp4" \
+                "$URL" 2>&1 | tail -5 || true
+              if [ -f "source_video.mp4" ] && [ -s "source_video.mp4" ]; then
+                echo "mode=download" >> "$GITHUB_OUTPUT"
+                echo "live=true" >> "$GITHUB_OUTPUT"
+                echo "Downloaded video: $(ls -lh source_video.mp4 | awk '{print $5}')"
+                exit 0
+              fi
+              rm -f source_video.mp4
+              echo "Waiting 5s before next attempt..."
+              sleep 5
+            done
+            echo "ERROR: Failed to resolve or download source"
+            exit 1
           fi
 
       - name: Overlay text updater
