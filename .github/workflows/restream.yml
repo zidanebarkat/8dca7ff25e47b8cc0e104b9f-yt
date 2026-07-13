@@ -112,7 +112,7 @@ jobs:
             --video-id "${{ inputs.source_url }}" \
             --api-key "${{ inputs.youtube_api_key }}" \
             --output chat.txt \
-            --max-messages 10 \
+            --max-messages 5 \
             --poll-interval 3 &
           echo "YouTube chat renderer started"
 
@@ -154,7 +154,7 @@ jobs:
           CHAT_FILTER=""
           if [ "$CHAT" = "true" ]; then
             echo " " > chat.txt
-            CHAT_FILTER=",drawtext=textfile=chat.txt:reload=1:fontfile=$FONT:fontsize=h*0.028:fontcolor=white:x=10:y=h-th-80:shadowcolor=black@0.7:shadowx=2:shadowy=2"
+            CHAT_FILTER=",drawtext=textfile=chat.txt:reload=1:fontfile=$FONT:fontsize=h*0.018:fontcolor=white:x=10:y=h-th-80:shadowcolor=black@0.7:shadowx=1:shadowy=1"
             echo "Chat overlay enabled"
           fi
 
@@ -171,7 +171,7 @@ jobs:
                   -f flv "${{ inputs.output_url }}" && break
               elif [ "$CHAT" = "true" ]; then
                 ffmpeg -nostdin -re -stream_loop -1 -i source_video.mp4 \
-                  -filter_complex "[0:v]drawtext=textfile=chat.txt:reload=1:fontfile=$FONT:fontsize=h*0.028:fontcolor=white:x=10:y=h-th-80:shadowcolor=black@0.7:shadowx=2:shadowy=2,format=yuv420p[out]" \
+                  -filter_complex "[0:v]drawtext=textfile=chat.txt:reload=1:fontfile=$FONT:fontsize=h*0.018:fontcolor=white:x=10:y=h-th-80:shadowcolor=black@0.7:shadowx=1:shadowy=1,format=yuv420p[out]" \
                   -map "[out]" -map 0:a \
                   -c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 \
                   -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k \
@@ -211,7 +211,7 @@ jobs:
                   -f flv "${{ inputs.output_url }}" && break
               elif [ "$CHAT" = "true" ]; then
                 ffmpeg "${INPUTS[@]}" \
-                  -filter_complex "[0:v]drawtext=textfile=chat.txt:reload=1:fontfile=$FONT:fontsize=h*0.028:fontcolor=white:x=10:y=h-th-80:shadowcolor=black@0.7:shadowx=2:shadowy=2,format=yuv420p[out]" \
+                  -filter_complex "[0:v]drawtext=textfile=chat.txt:reload=1:fontfile=$FONT:fontsize=h*0.018:fontcolor=white:x=10:y=h-th-80:shadowcolor=black@0.7:shadowx=1:shadowy=1,format=yuv420p[out]" \
                   -map "[out]" $AMAP \
                   -c:v libx264 -preset fast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 \
                   -x264-params "keyint=60:min-keyint=60" -c:a aac -b:a 128k \
